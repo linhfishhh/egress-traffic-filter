@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 egress-traffic-filter-common = { path = "../egress-traffic-filter-common" }
-
 aya-ebpf = { workspace = true }
 aya-log-ebpf = { workspace = true }
 
