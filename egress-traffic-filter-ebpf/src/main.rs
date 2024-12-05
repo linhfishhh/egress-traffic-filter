@@ -1,27 +1,22 @@
 #![no_std]
 #![no_main]
 
-use core::mem::{self, offset_of};
+use core::net::Ipv6Addr;
 
 use aya_ebpf::{
   bindings::{TC_ACT_PIPE, TC_ACT_SHOT},
-  macros::classifier,
+  macros::{classifier, map},
+  maps::HashMap,
   programs::TcContext,
-  EbpfContext,
 };
 use aya_log_ebpf::info;
+use network_types::{
+  eth::{EthHdr, EtherType},
+  ip::Ipv4Hdr,
+};
 
-#[allow(non_upper_case_globals)]
-#[allow(non_snake_case)]
-#[allow(non_camel_case_types)]
-#[allow(dead_code)]
-mod vmlinux;
-use vmlinux::{ethhdr, iphdr};
-
-const ETH_P_IP: u16 = 0x0800;
-const ETH_P_IPV6: u16 = 0x86dd;
-const ETH_HDR_LEN: usize = mem::size_of::<ethhdr>();
-
+#[map]
+static BLOCKLIST: HashMap<u128, u128> = HashMap::with_max_entries(1024, 0);
 #[classifier]
 pub fn egress_traffic_filter(ctx: TcContext) -> i32 {
   match try_egress_traffic_filter(ctx) {
@@ -30,42 +25,49 @@ pub fn egress_traffic_filter(ctx: TcContext) -> i32 {
   }
 }
 
-fn try_egress_traffic_filter(ctx: TcContext) -> Result<i32, i64> {
-  let h_proto = u16::from_be(ctx.load(offset_of!(ethhdr, h_proto)).map_err(|_| TC_ACT_PIPE)?);
-  // only process ipv4 and ipv6 packet
-  let ip_version: u32 = match h_proto {
-    ETH_P_IP => 4,
-    ETH_P_IPV6 => 6,
+fn try_egress_traffic_filter(ctx: TcContext) -> Result<i32, ()> {
+  let ethhdr: EthHdr = ctx.load(0).map_err(|_| ())?;
+
+  //only process ip v4 or ip v6
+  let ip_version = match ethhdr.ether_type {
+    EtherType::Ipv4 => 4,
+    EtherType::Ipv6 => 6,
     _ => return Ok(TC_ACT_PIPE),
   };
-  let destination: u128 = match ip_version {
-    4 => u32::from_be(ctx.load(ETH_HDR_LEN + offset_of!(iphdr, __bindgen_anon_1.__bindgen_anon_1.daddr))?) as u128,
-    6 => u128::from_be(ctx.load(ETH_HDR_LEN + offset_of!(iphdr, __bindgen_anon_1.__bindgen_anon_1.daddr))?),
-    _ => 0,
+
+  let dest_addr: u128 = match ip_version {
+    4 => {
+      let ipv4hdr: Ipv4Hdr = ctx.load(EthHdr::LEN).map_err(|_| ())?;
+      let destination = u32::from_be(ipv4hdr.dst_addr);
+      destination as u128
+    },
+    6 => {
+      let ipv6hdr: Ipv6Addr = ctx.load(EthHdr::LEN).map_err(|_| ())?;
+      let destination = u128::from_be_bytes(ipv6hdr.octets());
+      destination
+    },
+    _ => return Ok(TC_ACT_PIPE),
   };
 
-  let uid = ctx.get_socket_uid();
-
-  let mut ip_address: [u32; 4] = [0; 4];
-
-  let mut counter = 0;
-  for chunk in (destination as u128).to_le_bytes().chunks(4) {
-    ip_address[counter] = u32::from_le_bytes(chunk.try_into().expect("Internal Error: Size of Chunks is not 4 bytes"));
-    counter += 1;
-  }
+  let action = if block_ip(dest_addr) { TC_ACT_SHOT } else { TC_ACT_PIPE };
 
   match ip_version {
     4 => {
-      let ip_address = destination as u32;
-      info!(&ctx, "VERSION {}, DEST {:i}, UID {}", ip_version, ip_address, uid)
+      let ip_address = dest_addr as u32;
+      info!(&ctx, "VERSION {}, DEST {:i}, action: {}", ip_version, ip_address, action)
     },
     6 => {
-      let ip_address = (destination as u128).to_le_bytes();
-      info!(&ctx, "VERSION {}, DEST {:i} , UID {}", ip_version, ip_address, uid)
+      let ip_address = (dest_addr as u128).to_le_bytes();
+      info!(&ctx, "VERSION {}, DEST {:i}, action: {}", ip_version, ip_address, action)
     },
-    _ => info!(&ctx, "Unkown IP version {}, UID {}", ip_version, uid),
-  }
-  Ok(TC_ACT_PIPE)
+    _ => info!(&ctx, "Unkown IP version {}, action: {}", ip_version, action),
+  };
+
+  Ok(action)
+}
+
+fn block_ip(address: u128) -> bool {
+  unsafe { BLOCKLIST.get(&address).is_some() }
 }
 
 #[cfg(not(test))]
