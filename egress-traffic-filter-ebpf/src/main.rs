@@ -29,19 +29,13 @@ fn try_egress_traffic_filter(ctx: TcContext) -> Result<i32, ()> {
   let ethhdr: EthHdr = ctx.load(0).map_err(|_| ())?;
 
   //only process ip v4 or ip v6
-  let ip_version = match ethhdr.ether_type {
-    EtherType::Ipv4 => 4,
-    EtherType::Ipv6 => 6,
-    _ => return Ok(TC_ACT_PIPE),
-  };
-
-  let dest_addr: u128 = match ip_version {
-    4 => {
+  let dest_addr = match ethhdr.ether_type {
+    EtherType::Ipv4 => {
       let ipv4hdr: Ipv4Hdr = ctx.load(EthHdr::LEN).map_err(|_| ())?;
       let destination = u32::from_be(ipv4hdr.dst_addr);
       destination as u128
     },
-    6 => {
+    EtherType::Ipv6 => {
       let ipv6hdr: Ipv6Addr = ctx.load(EthHdr::LEN).map_err(|_| ())?;
       let destination = u128::from_be_bytes(ipv6hdr.octets());
       destination
@@ -51,17 +45,7 @@ fn try_egress_traffic_filter(ctx: TcContext) -> Result<i32, ()> {
 
   let action = if block_ip(dest_addr) { TC_ACT_SHOT } else { TC_ACT_PIPE };
 
-  match ip_version {
-    4 => {
-      let ip_address = dest_addr as u32;
-      info!(&ctx, "VERSION {}, DEST {:i}, action: {}", ip_version, ip_address, action)
-    },
-    6 => {
-      let ip_address = (dest_addr as u128).to_le_bytes();
-      info!(&ctx, "VERSION {}, DEST {:i}, action: {}", ip_version, ip_address, action)
-    },
-    _ => info!(&ctx, "Unkown IP version {}, action: {}", ip_version, action),
-  };
+  info!(&ctx, "DEST {:i}, action: {}", dest_addr as u32, action);
 
   Ok(action)
 }
