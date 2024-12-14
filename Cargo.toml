@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["egress-traffic-filter", "egress-traffic-filter-common", "egress-traffic-filter-ebpf", "xtask"]
+members = [
+    "egress-traffic-filter",
+    "egress-traffic-filter-common",
+    "egress-traffic-filter-ebpf",
+]
 default-members = ["egress-traffic-filter", "egress-traffic-filter-common"]
 
 [workspace.dependencies]
